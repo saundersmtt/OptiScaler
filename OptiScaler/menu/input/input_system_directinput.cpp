@@ -1,8 +1,6 @@
 #include "pch.h"
 #include "input_system_internal.h"
 
-#include <hooks/Kernel_Hooks.h>
-
 #include <detours/detours.h>
 
 #include <cstring>
@@ -394,24 +392,19 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
         return completeCoverage;
     }
 
-    LONG result = NO_ERROR;
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
 
-    {
-        std::scoped_lock detourLock(GetDetourTransactionMutex());
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
+    if (attachRelease)
+        DetourAttach(reinterpret_cast<PVOID*>(&releaseHook->Trampoline), hkDirectInputDeviceRelease);
 
-        if (attachRelease)
-            DetourAttach(reinterpret_cast<PVOID*>(&releaseHook->Trampoline), hkDirectInputDeviceRelease);
+    if (attachGetDeviceState)
+        DetourAttach(reinterpret_cast<PVOID*>(&getDeviceStateHook->Trampoline), hkDirectInputGetDeviceState);
 
-        if (attachGetDeviceState)
-            DetourAttach(reinterpret_cast<PVOID*>(&getDeviceStateHook->Trampoline), hkDirectInputGetDeviceState);
+    if (attachGetDeviceData)
+        DetourAttach(reinterpret_cast<PVOID*>(&getDeviceDataHook->Trampoline), hkDirectInputGetDeviceData);
 
-        if (attachGetDeviceData)
-            DetourAttach(reinterpret_cast<PVOID*>(&getDeviceDataHook->Trampoline), hkDirectInputGetDeviceData);
-
-        result = DetourTransactionCommit();
-    }
+    const LONG result = DetourTransactionCommit();
 
     if (result != NO_ERROR)
     {
@@ -475,15 +468,11 @@ bool HookDirectInputInterfaceLocked(void* directInput, bool wide)
         // implementation through one detour so a shared A/W implementation is
         // never attached twice. The interface's vtable identifies the correct
         // per-target trampoline at call time.
-        LONG result = NO_ERROR;
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(reinterpret_cast<PVOID*>(&slot->Trampoline), hkDirectInputCreateDeviceA);
 
-        {
-            std::scoped_lock detourLock(GetDetourTransactionMutex());
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(reinterpret_cast<PVOID*>(&slot->Trampoline), hkDirectInputCreateDeviceA);
-            result = DetourTransactionCommit();
-        }
+        const LONG result = DetourTransactionCommit();
 
         if (result != NO_ERROR)
         {
@@ -552,43 +541,25 @@ void HandleLegacyDirectInputCreatedLocked(void** out, bool wide)
     HookDirectInputInterfaceLocked(*out, wide);
 }
 
-bool InstallDirectInputExportHook(HMODULE module, const char* exportName, void** original, void* hook, bool* installed)
+bool InstallDirectInputExportHookLocked(HMODULE module, const char* exportName, void** original, void* hook,
+                                        bool* installed)
 {
     if (module == nullptr || exportName == nullptr || original == nullptr || hook == nullptr || installed == nullptr)
         return false;
 
-    {
-        std::unique_lock lock(_state.Mutex);
+    if (*installed)
+        return true;
 
-        if (*installed)
-            return true;
-    }
+    *original = reinterpret_cast<void*>(GetProcAddress(module, exportName));
 
-    void* resolved = reinterpret_cast<void*>(KernelBaseProxy::GetProcAddress_()(module, exportName));
-
-    if (resolved == nullptr)
+    if (*original == nullptr)
         return false;
 
-    {
-        std::unique_lock lock(_state.Mutex);
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(reinterpret_cast<PVOID*>(original), hook);
 
-        if (*installed)
-            return true;
-
-        *original = resolved;
-    }
-
-    LONG result = NO_ERROR;
-
-    {
-        std::scoped_lock detourLock(GetDetourTransactionMutex());
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-        DetourAttach(reinterpret_cast<PVOID*>(original), hook);
-        result = DetourTransactionCommit();
-    }
-
-    std::unique_lock lock(_state.Mutex);
+    const LONG result = DetourTransactionCommit();
 
     if (result != NO_ERROR)
     {
@@ -613,28 +584,22 @@ HRESULT CallDirectInputCreateDeviceOriginal(DirectInputCreateDevice_t original, 
 }
 } // namespace
 
-void UpdateDirectInputIntegration()
+void UpdateDirectInputIntegrationLocked()
 {
-    // Module discovery can enter the loader. Do it before publishing state or installing hooks.
     HMODULE module8 = FindLoadedDirectInput8Module();
     HMODULE legacyModule = FindLoadedDirectInputLegacyModule();
 
-    {
-        std::unique_lock lock(_state.Mutex);
-        _state.DirectInputModule = module8;
-        _state.DirectInputLegacyModule = legacyModule;
-        _state.DirectInputModuleLoaded = module8 != nullptr || legacyModule != nullptr;
-        _state.DirectInputLegacyModuleLoaded = legacyModule != nullptr;
-    }
+    _state.DirectInputModule = module8;
+    _state.DirectInputLegacyModule = legacyModule;
+    _state.DirectInputModuleLoaded = module8 != nullptr || legacyModule != nullptr;
+    _state.DirectInputLegacyModuleLoaded = legacyModule != nullptr;
 
     if (module8 != nullptr)
     {
-        if (!InstallDirectInputExportHook(module8, DirectInput8CreateExportName,
-                                          reinterpret_cast<void**>(&o_DirectInput8Create), hkDirectInput8Create,
-                                          &_state.DirectInput8CreateHookInstalled))
+        if (!InstallDirectInputExportHookLocked(module8, DirectInput8CreateExportName,
+                                                reinterpret_cast<void**>(&o_DirectInput8Create), hkDirectInput8Create,
+                                                &_state.DirectInput8CreateHookInstalled))
         {
-            std::unique_lock lock(_state.Mutex);
-
             if (o_DirectInput8Create == nullptr)
             {
                 OPTIINPUT_LOG_VERBOSE("DirectInput8Create export was not found module:{}", static_cast<void*>(module8));
@@ -644,17 +609,17 @@ void UpdateDirectInputIntegration()
 
     if (legacyModule != nullptr)
     {
-        InstallDirectInputExportHook(legacyModule, DirectInputCreateAExportName,
-                                     reinterpret_cast<void**>(&o_DirectInputCreateA), hkDirectInputCreateA,
-                                     &_state.DirectInputCreateAHookInstalled);
+        InstallDirectInputExportHookLocked(legacyModule, DirectInputCreateAExportName,
+                                           reinterpret_cast<void**>(&o_DirectInputCreateA), hkDirectInputCreateA,
+                                           &_state.DirectInputCreateAHookInstalled);
 
-        InstallDirectInputExportHook(legacyModule, DirectInputCreateWExportName,
-                                     reinterpret_cast<void**>(&o_DirectInputCreateW), hkDirectInputCreateW,
-                                     &_state.DirectInputCreateWHookInstalled);
+        InstallDirectInputExportHookLocked(legacyModule, DirectInputCreateWExportName,
+                                           reinterpret_cast<void**>(&o_DirectInputCreateW), hkDirectInputCreateW,
+                                           &_state.DirectInputCreateWHookInstalled);
 
-        InstallDirectInputExportHook(legacyModule, DirectInputCreateExExportName,
-                                     reinterpret_cast<void**>(&o_DirectInputCreateEx), hkDirectInputCreateEx,
-                                     &_state.DirectInputCreateExHookInstalled);
+        InstallDirectInputExportHookLocked(legacyModule, DirectInputCreateExExportName,
+                                           reinterpret_cast<void**>(&o_DirectInputCreateEx), hkDirectInputCreateEx,
+                                           &_state.DirectInputCreateExHookInstalled);
     }
 }
 
