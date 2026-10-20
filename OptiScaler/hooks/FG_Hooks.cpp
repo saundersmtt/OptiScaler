@@ -2,6 +2,7 @@
 #include "FG_Hooks.h"
 #include <Config.h>
 
+#include <upscalers/IFeature_Dx11wDx12.h>
 #include <framegen/ffx/FSRFG_Dx12.h>
 #include <framegen/xefg/XeFG_Dx12.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
@@ -1208,7 +1209,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         {
             std::optional<double> upscalerTimeOpt {};
 
-            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 && state.currentD3D11Device != nullptr)
+            // Only a DX11-on-DX12 wrapper feature takes a D3D11 context here. A plain DX12 feature (an upscaler driven through
+            // the D3D12 API by a host that presents on a DX11 swapchain, e.g. EDVR's XeSS D3D12 path) casts its argument to an
+            // ID3D12CommandQueue, so handing it the D3D11 context calls GetTimestampFrequency on the wrong object and crashes.
+            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 && state.currentD3D11Device != nullptr &&
+                dynamic_cast<IFeature_Dx11wDx12*>(currentFeature) != nullptr)
             {
                 ID3D11DeviceContext* context = nullptr;
                 state.currentD3D11Device->GetImmediateContext(&context);
