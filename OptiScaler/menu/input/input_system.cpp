@@ -799,6 +799,9 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
 
 bool Initialize(const InitializeOptions& options)
 {
+    // [local test patch] disable the whole OptiInput layer to test whether it breaks Elite's input
+    return false;
+
     std::unique_lock lock(_state.Mutex);
 
     if (_state.CurrentProcessId == 0)
