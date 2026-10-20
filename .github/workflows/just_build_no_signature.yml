@@ -114,3 +114,8 @@ jobs:
         archive: false
         compression-level: 0
         if-no-files-found: error
+    - uses: actions/upload-artifact@v7.0.0
+      with:
+        name: optiscaler-pdb
+        path: '${{ github.workspace }}\x64\Release\*.pdb'
+        if-no-files-found: error
