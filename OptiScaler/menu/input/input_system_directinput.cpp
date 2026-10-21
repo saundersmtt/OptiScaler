@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <atomic>
 #include "input_system_internal.h"
 
 #include <hooks/Kernel_Hooks.h>
@@ -960,7 +961,19 @@ HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID 
     }
 
     if (original == nullptr)
+    {
+        static std::atomic<int> diagCount {0};
+        if (diagCount++ < 12)
+        {
+            std::unique_lock lock(_state.Mutex);
+            PVOID target9 = device != nullptr ? (*reinterpret_cast<PVOID**>(device))[9] : nullptr;
+            LOG_WARN("[diag] GetDeviceState: no trampoline for device:{} vtable[9]:{}; registered targets:", device, target9);
+            for (const auto& slot : DirectInputGetDeviceStateHooks)
+                if (slot.InUse)
+                    LOG_WARN("[diag]   registered GetDeviceState target:{}", reinterpret_cast<void*>(slot.Target));
+        }
         return DIERR_GENERIC;
+    }
 
     ScopedHookBypass bypass;
     return original(device, dataSize, data);
@@ -999,7 +1012,20 @@ HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LP
     if (!shouldBlock)
     {
         if (original == nullptr)
+        {
+            static std::atomic<int> diagCount {0};
+            if (diagCount++ < 12)
+            {
+                std::unique_lock lock(_state.Mutex);
+                PVOID target10 = device != nullptr ? (*reinterpret_cast<PVOID**>(device))[10] : nullptr;
+                LOG_WARN("[diag] GetDeviceData: no trampoline for device:{} vtable[10]:{}; registered targets:", device,
+                         target10);
+                for (const auto& slot : DirectInputGetDeviceDataHooks)
+                    if (slot.InUse)
+                        LOG_WARN("[diag]   registered GetDeviceData target:{}", reinterpret_cast<void*>(slot.Target));
+            }
             return DIERR_GENERIC;
+        }
 
         ScopedHookBypass bypass;
         return original(device, objectDataSize, data, inOut, flags);
