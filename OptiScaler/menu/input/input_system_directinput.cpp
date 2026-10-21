@@ -615,6 +615,8 @@ HRESULT CallDirectInputCreateDeviceOriginal(DirectInputCreateDevice_t original, 
 
 void UpdateDirectInputIntegration()
 {
+    return; // [bisect diagnostic] integration disabled
+
     // Module discovery can enter the loader. Do it before publishing state or installing hooks.
     HMODULE module8 = FindLoadedDirectInput8Module();
     HMODULE legacyModule = FindLoadedDirectInputLegacyModule();
