@@ -62,6 +62,8 @@ void ClearXInputHookPointersLocked()
 
 void UpdateXInputIntegration()
 {
+    return; // [bisect diagnostic] integration disabled
+
     {
         std::unique_lock lock(_state.Mutex);
 

@@ -18,6 +18,8 @@ HMODULE GetAlreadyLoadedModule(const wchar_t* moduleName) { return GetModuleHand
 
 void UpdateGameInputIntegration()
 {
+    return; // [bisect diagnostic] integration disabled
+
     // A module may be mapped before its DllMain has completed
     HMODULE gameInputModule = GetAlreadyLoadedModule(GameInputModuleName);
     HMODULE windowsGamingInputModule = GetAlreadyLoadedModule(WindowsGamingInputModuleName);
